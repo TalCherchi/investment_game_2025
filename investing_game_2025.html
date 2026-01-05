@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>משחק השקעות ת"א 125</title>
+    
+    <!-- טעינת Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- טעינת ספריות React ו-Recharts משרתים אמינים וגרסאות יציבות -->
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
+    
+    <!-- שימוש בגרסה 2.5.0 של Recharts שהיא יציבה מאוד לשימוש כזה -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.5.0/Recharts.min.js"></script>
+    
+    <!-- Babel -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        .recharts-tooltip-wrapper {
+            direction: rtl;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // --- ייבוא רכיבים ---
+        const { useState, useEffect, useMemo } = React;
+        
+        // וידוא שהספרייה קיימת, אם לא - נשתמש באובייקט ריק כדי למנוע קריסה מידית (הגרף פשוט לא יופיע)
+        const RechartsLib = window.Recharts || {
+            LineChart: () => null, Line: () => null, XAxis: () => null, YAxis: () => null, 
+            CartesianGrid: () => null, Tooltip: () => null, ResponsiveContainer: ({children}) => <div>{children}</div>, 
+            Legend: () => null, ReferenceLine: () => null
+        };
+        
+        const { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, ReferenceLine } = RechartsLib;
+
+        // --- אייקונים ---
+        const IconBase = ({ children, className, size = 24, color = "currentColor" }) => (
+            <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+                {children}
+            </svg>
+        );
+
+        const TrendingUp = (props) => <IconBase {...props}><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></IconBase>;
+        const TrendingDown = (props) => <IconBase {...props}><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"></polyline><polyline points="17 18 23 18 23 12"></polyline></IconBase>;
+        const Play = (props) => <IconBase {...props}><polygon points="5 3 19 12 5 21 5 3"></polygon></IconBase>;
+        const StopCircle = (props) => <IconBase {...props}><circle cx="12" cy="12" r="10"></circle><rect x="9" y="9" width="6" height="6"></rect></IconBase>;
+        const BarChart3 = (props) => <IconBase {...props}><path d="M3 3v18h18"></path><path d="M18 17V9"></path><path d="M13 17V5"></path><path d="M8 17v-3"></path></IconBase>;
+        const RefreshCcw = (props) => <IconBase {...props}><path d="M3 2v6h6"></path><path d="M21 12A9 9 0 0 0 6 5.3L3 8"></path><path d="M21 22v-6h-6"></path><path d="M3 12a9 9 0 0 0 15 6.7l3-2.7"></path></IconBase>;
+        const Award = (props) => <IconBase {...props}><circle cx="12" cy="8" r="7"></circle><polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88"></polyline></IconBase>;
+
+        // --- לוגיקה ---
+        const marketData = [
+            { month: 'ינואר', ta125: 3.04, hedge: 4.87 },
+            { month: 'פברואר', ta125: 1.68, hedge: 1.10 },
+            { month: 'מרץ', ta125: -3.78, hedge: 3.50 },
+            { month: 'אפריל', ta125: 4.53, hedge: -1.10 },
+            { month: 'מאי', ta125: 6.55, hedge: 4.10 },
+            { month: 'יוני', ta125: 10.93, hedge: 7.40 },
+            { month: 'יולי', ta125: 2.00, hedge: 2.20 },
+            { month: 'אוגוסט', ta125: 1.04, hedge: 2.80 },
+            { month: 'ספטמבר', ta125: 4.29, hedge: 3.2 },
+            { month: 'אוקטובר', ta125: 2.77, hedge: 1.4 },
+            { month: 'נובמבר', ta125: 4.22, hedge: 0.3 },
+            { month: 'דצמבר', ta125: 5.00, hedge: 6.0 },
+        ];
+
+        const INITIAL_CAPITAL = 1000000;
+
+        const formatCurrency = (value) => new Intl.NumberFormat('he-IL', { style: 'currency', currency: 'ILS', maximumFractionDigits: 0 }).format(value);
+        const formatPercent = (value) => `${value > 0 ? '+' : ''}${value.toFixed(2)}%`;
+
+        function TA125Game() {
+            const [gameState, setGameState] = useState('intro'); 
+            const [currentMonthIndex, setCurrentMonthIndex] = useState(0);
+            const [playerBalance, setPlayerBalance] = useState(INITIAL_CAPITAL);
+            const [hedgeBalance, setHedgeBalance] = useState(INITIAL_CAPITAL);
+            const [history, setHistory] = useState([{ month: 'התחלה', ta125: INITIAL_CAPITAL, hedge: INITIAL_CAPITAL }]);
+            const [lastMonthChange, setLastMonthChange] = useState(null); 
+
+            const fullYearHedgeData = useMemo(() => {
+                let balance = INITIAL_CAPITAL;
+                const path = [{ month: 'התחלה', hedge: Math.round(balance) }];
+                marketData.forEach(data => {
+                    balance = balance * (1 + data.hedge / 100);
+                    path.push({ month: data.month, hedge: Math.round(balance) });
+                });
+                return path;
+            }, []);
+
+            const startGame = () => {
+                setGameState('playing');
+                setCurrentMonthIndex(0);
+                setPlayerBalance(INITIAL_CAPITAL);
+                setHedgeBalance(INITIAL_CAPITAL);
+                setHistory([{ month: 'התחלה', ta125: INITIAL_CAPITAL, hedge: INITIAL_CAPITAL }]);
+                setLastMonthChange(null);
+            };
+
+            const investNextMonth = () => {
+                if (currentMonthIndex >= marketData.length) return;
+                const currentData = marketData[currentMonthIndex];
+                
+                const playerMultiplier = 1 + (currentData.ta125 / 100);
+                const newPlayerBalance = playerBalance * playerMultiplier;
+                const playerDiff = newPlayerBalance - playerBalance;
+
+                const hedgeMultiplier = 1 + (currentData.hedge / 100);
+                const newHedgeBalance = hedgeBalance * hedgeMultiplier;
+
+                const newHistoryItem = {
+                    month: currentData.month,
+                    ta125: Math.round(newPlayerBalance),
+                    hedge: Math.round(newHedgeBalance),
+                    ta125Return: currentData.ta125
+                };
+
+                setHistory([...history, newHistoryItem]);
+                setPlayerBalance(newPlayerBalance);
+                setHedgeBalance(newHedgeBalance);
+                setLastMonthChange({ percent: currentData.ta125, amount: playerDiff });
+                
+                // תיקון: קידום האינדקס תמיד כדי לעדכן את הממשק למצב "סיום" מיידית ולמנוע לחיצות כפולות
+                setCurrentMonthIndex(prev => prev + 1);
+                
+                if (currentMonthIndex === marketData.length - 1) {
+                    setTimeout(() => setGameState('summary'), 1500); 
+                }
+            };
+
+            const stopGame = () => setGameState('summary');
+
+            if (gameState === 'intro') {
+                return (
+                    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4 font-sans" dir="rtl">
+                        <div className="bg-white rounded-2xl shadow-xl p-8 max-w-lg w-full text-center space-y-6">
+                            <div className="bg-blue-100 p-4 rounded-full w-20 h-20 mx-auto flex items-center justify-center">
+                                <BarChart3 size={40} className="text-blue-600" />
+                            </div>
+                            <h1 className="text-3xl font-bold text-gray-800">סימולטור השקעות: ת"א  125 נגד קרן גידור</h1>
+                            <div className="text-gray-600 text-lg space-y-4">
+                                <p>
+                                    החלטת להשקיע בשוק ההון, מדד ת"א 125,  <span className="font-bold text-blue-600">1,000,000 ₪</span>.
+                                </p>
+                                <p>
+                                    המטרה שלך היא לסיים את המשחק עם סכום כסף גדול ככל האפשר ולנצח את רווחי קרן הגידור.
+                                </p>
+                                <p>
+                                    בכל חודש תוכל להחליט האם להמשיך להשקיע במדד ת"א 125 או לעצור ולמשוך את הכסף, המשחק יכול להימשך עד 12 חודשים.
+                                </p>
+                            </div>
+                            <div className="bg-yellow-50 border border-yellow-200 p-4 rounded-lg text-sm text-yellow-800 text-right">
+                                <p className="font-bold mb-1">איך משחקים?</p>
+                                <ul className="list-disc list-inside space-y-1">
+                                    <li>בכל חודש תוצג לך התשואה החודשית.</li>
+                                    <li>הכסף צובר ריבית דריבית.</li>
+                                    <li>ניתן לעצור בכל רגע.</li>
+                                    <li>בסוף נשווה אותך לקרן גידור מתחרה (שתמיד משקיעה לשנה מלאה), אשר מטרתך לנצח אותה.</li>
+                                </ul>
+                            </div>
+                            <button onClick={startGame} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-6 rounded-xl transition-all transform hover:scale-105 shadow-lg flex items-center justify-center gap-2">
+                                <Play size={24} /> התחל להשקיע
+                            </button>
+                        </div>
+                    </div>
+                );
+            }
+
+            if (gameState === 'summary') {
+                const totalProfit = playerBalance - INITIAL_CAPITAL;
+                const totalReturn = ((playerBalance / INITIAL_CAPITAL) - 1) * 100;
+                
+                const finalHedgeBalance = fullYearHedgeData[fullYearHedgeData.length - 1].hedge;
+                const hedgeProfit = finalHedgeBalance - INITIAL_CAPITAL;
+                const hedgeReturn = ((finalHedgeBalance / INITIAL_CAPITAL) - 1) * 100;
+                const isWin = playerBalance > finalHedgeBalance;
+
+                const summaryChartData = fullYearHedgeData.map((hedgePoint, index) => {
+                    const playerPoint = history[index];
+                    return {
+                        month: hedgePoint.month,
+                        hedge: hedgePoint.hedge,
+                        ta125: playerPoint ? playerPoint.ta125 : null 
+                    };
+                });
+
+                return (
+                    <div className="min-h-screen bg-gray-50 p-4 md:p-8 font-sans" dir="rtl">
+                        <div className="max-w-4xl mx-auto space-y-6">
+                            <div className="bg-white rounded-2xl shadow-lg p-6 md:p-8 text-center">
+                                <h2 className="text-3xl font-bold text-gray-800 mb-2">סיכום ביצועים</h2>
+                                <p className="text-gray-500 mb-8">השוואה: התוצאה שלך מול שנה מלאה בקרן גידור</p>
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                                    <div className={`p-6 rounded-xl border-2 ${isWin ? 'border-green-500 bg-green-50' : 'border-gray-200 bg-white'}`}>
+                                        <div className="flex items-center justify-center gap-2 mb-4">
+                                            <span className="font-bold text-xl text-gray-700">התיק שלך (ת"א 125)</span>
+                                            {isWin && <Award className="text-green-600" />}
+                                        </div>
+                                        <div className="text-4xl font-bold text-gray-900 mb-2">{formatCurrency(playerBalance)}</div>
+                                        <div className={`text-lg font-semibold ${totalProfit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                            {formatPercent(totalReturn)} ({formatCurrency(totalProfit)})
+                                        </div>
+                                    </div>
+
+                                    <div className={`p-6 rounded-xl border-2 ${!isWin ? 'border-purple-500 bg-purple-50' : 'border-gray-200 bg-white'}`}>
+                                        <div className="flex items-center justify-center gap-2 mb-4">
+                                            <span className="font-bold text-xl text-gray-700">קרן גידור A (שנתי מלא)</span>
+                                            {!isWin && <Award className="text-purple-600" />}
+                                        </div>
+                                        <div className="text-4xl font-bold text-gray-900 mb-2">{formatCurrency(finalHedgeBalance)}</div>
+                                        <div className={`text-lg font-semibold ${hedgeProfit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                            {formatPercent(hedgeReturn)} ({formatCurrency(hedgeProfit)})
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="h-80 w-full mb-6 bg-white p-4 rounded-xl border border-gray-100">
+                                    <h3 className="text-lg font-semibold text-gray-700 mb-4 text-right">התפתחות ההשקעה (שנתית)</h3>
+                                    <ResponsiveContainer width="100%" height="100%">
+                                        <LineChart data={summaryChartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                                            <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                                            <XAxis dataKey="month" />
+                                            <YAxis tickFormatter={(val) => `₪${val/1000}k`} domain={['auto', 'auto']} />
+                                            <Tooltip formatter={(value) => value ? formatCurrency(value) : '-'} contentStyle={{ direction: 'rtl', borderRadius: '8px' }} />
+                                            <Legend />
+                                            <Line connectNulls={false} type="monotone" dataKey="ta125" name="התיק שלך" stroke="#2563eb" strokeWidth={3} dot={{ r: 4 }} activeDot={{ r: 8 }} />
+                                            <Line type="monotone" dataKey="hedge" name="קרן גידור A (שנתי)" stroke="#9333ea" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 4 }} />
+                                        </LineChart>
+                                    </ResponsiveContainer>
+                                </div>
+
+                                <button onClick={startGame} className="bg-gray-800 hover:bg-gray-900 text-white font-bold py-3 px-8 rounded-full transition-colors flex items-center justify-center gap-2 mx-auto">
+                                    <RefreshCcw size={20} /> התחל משחק חדש
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            const currentMonthName = currentMonthIndex < marketData.length ? marketData[currentMonthIndex].month : 'סיום';
+            const isLastMonth = currentMonthIndex === marketData.length;
+
+            return (
+                <div className="min-h-screen bg-gray-50 p-4 font-sans" dir="rtl">
+                    <div className="max-w-5xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <div className="lg:col-span-1 space-y-6">
+                            <div className="bg-white p-6 rounded-2xl shadow-md border-t-4 border-blue-500">
+                                <h2 className="text-gray-500 text-sm font-semibold mb-1">שווי תיק נוכחי</h2>
+                                <div className="text-3xl font-bold text-gray-900">{formatCurrency(playerBalance)}</div>
+                                <div className="mt-2 flex items-center text-sm">
+                                    <span className="text-gray-400 ml-1">התחלה:</span> <span>{formatCurrency(INITIAL_CAPITAL)}</span>
+                                </div>
+                            </div>
+
+                            {lastMonthChange && (
+                                <div className={`p-6 rounded-2xl shadow-md border-r-4 ${lastMonthChange.percent >= 0 ? 'bg-green-50 border-green-500' : 'bg-red-50 border-red-500'}`}>
+                                    <h3 className="text-gray-600 font-semibold mb-2">ביצועי החודש האחרון ({history[history.length-1].month})</h3>
+                                    <div className="flex items-center gap-3">
+                                        {lastMonthChange.percent >= 0 ? <TrendingUp className="text-green-600 h-8 w-8" /> : <TrendingDown className="text-red-600 h-8 w-8" />}
+                                        <div>
+                                            <div className={`text-2xl font-bold ${lastMonthChange.percent >= 0 ? 'text-green-700' : 'text-red-700'}`}>{formatPercent(lastMonthChange.percent)}</div>
+                                            <div className={`font-medium ${lastMonthChange.percent >= 0 ? 'text-green-600' : 'text-red-600'}`}>{lastMonthChange.amount >= 0 ? '+' : ''}{formatCurrency(lastMonthChange.amount)}</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            <div className="bg-white p-6 rounded-2xl shadow-md">
+                                <h3 className="text-lg font-bold text-gray-800 mb-4">{isLastMonth ? "סיימת את השנה!" : `החלטה לחודש: ${currentMonthName}`}</h3>
+                                {!isLastMonth ? (
+                                    <div className="space-y-3">
+                                        <button onClick={investNextMonth} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-4 rounded-xl transition-all shadow-md flex items-center justify-between group">
+                                            <span className="flex items-center gap-2"><TrendingUp size={20} className="group-hover:animate-bounce" /> המשך להשקיע</span>
+                                            <span className="text-blue-200 text-sm">חודש הבא &larr;</span>
+                                        </button>
+                                        <button onClick={stopGame} className="w-full bg-white hover:bg-gray-100 text-gray-700 border-2 border-gray-200 font-bold py-4 px-4 rounded-xl transition-all flex items-center gap-2">
+                                            <StopCircle size={20} className="text-gray-500" /> עצור ומשוך כספים
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <div className="text-center text-gray-500">מעביר לסיכום...</div>
+                                )}
+                                <div className="mt-4 text-xs text-gray-400 text-center">חודש {currentMonthIndex + 1} מתוך 12</div>
+                            </div>
+                        </div>
+
+                        <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-md flex flex-col">
+                            <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center gap-2"><BarChart3 className="text-blue-500" /> שווי התיק בש"ח</h3>
+                            <div className="flex-grow min-h-[400px]">
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <LineChart data={history} margin={{ top: 10, right: 30, left: 10, bottom: 0 }}>
+                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
+                                        <XAxis dataKey="month" stroke="#6b7280" padding={{ left: 10, right: 10 }} />
+                                        <YAxis orientation="right" stroke="#6b7280" tickFormatter={(val) => `₪${(val/1000).toFixed(0)}k`} domain={['auto', 'auto']} />
+                                        <Tooltip formatter={(value) => [formatCurrency(value), 'שווי תיק']} labelStyle={{ textAlign: 'right', color: '#374151', fontWeight: 'bold' }} contentStyle={{ direction: 'rtl', borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }} />
+                                        <ReferenceLine y={INITIAL_CAPITAL} stroke="red" strokeDasharray="3 3" label={{ position: 'right', value: 'קרן', fill: 'red', fontSize: 12 }} />
+                                        <Line type="monotone" dataKey="ta125" stroke="#2563eb" strokeWidth={4} dot={{ r: 6, fill: '#2563eb', strokeWidth: 2, stroke: '#fff' }} activeDot={{ r: 8 }} animationDuration={1000} />
+                                    </LineChart>
+                                </ResponsiveContainer>
+                            </div>
+                            <div className="mt-4 bg-blue-50 p-3 rounded-lg text-sm text-blue-800 text-center">הגרף מתעדכן בזמן אמת לאחר כל החלטת השקעה</div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<TA125Game />);
+    </script>
+</body>
+</html>
